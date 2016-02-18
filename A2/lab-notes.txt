@@ -1,0 +1,39 @@
+Differentiation of the source of the connection from a packet
+    - A packet has a src and destination, but these do not reflect the client and server directly
+    - If just the SYN flag is set
+        - then the src field in the packet is active partner
+        - then the dest field in the packet is the passive partner
+        - This type of packet is sent when opening a connection
+    - If the SYN and ACK flags are set, on a packet following the single SYN flag packet
+      then this the response from the passive partner.
+        - then the src field in the packet is the passive partner
+        - then the dest field in the packet is the active partner
+
+The assignment needs to understand the packet structure;
+   
+    +---------+----+------+---------------------+
+    | TCP/UDP | IP | eth0 |       Payload       |
+    +---------+----+------+---------------------+
+    
+
+The program must accept a .cap file as a command line input
+
+TCP connections are identified a 4-tuple
+    - SRC IP
+    - SRC PORT
+    - DEST IP
+    - DEST PORT
+
+
+Pseudo code
+
+    Main
+        - check input args
+        - exract file name
+        - read the file
+            - pcap open
+            - pcap compile ( filter created before )
+            - pcap set filter
+            - pcap loop / next
+            - pcap close
+        - print the report

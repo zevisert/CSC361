@@ -32,4 +32,7 @@
 *.dSYM/
 
 # Lab folders
-Lab.*/
+*.Lab+./
+
+# Swap files
+*.swp
