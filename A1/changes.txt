@@ -1,0 +1,18 @@
+Changes to Assignment 1 since demo on 10:30 Tuesday Feb 02 
+
+====== Client ======
+ - Formatted output to match assignment description
+ - Disabled verbose mode
+ - Attempted fix for 3xx status
+    - Relates to client not sending Host: example.com in GET req.
+    - Fixes some sites but not all
+    - Fix requires client taking further action in 3xx status
+
+====== Server ======
+ - Fixed invalid path failure when specifying port and path
+ - Added some header data
+    - Server name
+    - Date
+    - Content length
+- Changed server log formatting
+- Disabled verbose mode
