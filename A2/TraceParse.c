@@ -1,7 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pcap.h>
+
 #include "TraceParse.h"
+
 
 #define VERBOSE 1
 
@@ -14,6 +17,21 @@ int main(int count, char** args)
     count = verify_input(args);
     if (count == 0) quit("No valid input files");
     
+    pcap_t* cap;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    int i;
+    for (i = 1; i <= count; ++i)
+    {
+        if ((cap = pcap_open_offline(args[i], errbuf)) == NULL)
+        {
+            printf("Couldn't open file %s\nReason: %s\n", args[i], errbuf);
+            continue;
+        }
+        else if (VERBOSE) printf("Opened cap file %s\n", args[i]);
+        dump_tcp(cap);
+        pcap_close(cap);
+    }
+
     quit("Source code not complete");
     return EXIT_SUCCESS;
 }
@@ -115,4 +133,10 @@ int verify_input(char** args)
         }
     }
     return numFiles;
+}
+
+void dump_tcp(pcap_t* cap)
+{
+    
+
 }
