@@ -2,4 +2,4 @@
 
 int main(int, char**);
 void quit(char*);
-int verify_input(int, char**);
+int verify_input(char**);

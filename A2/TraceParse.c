@@ -11,7 +11,7 @@ typedef enum { true, false } bool;
 int main(int count, char** args)
 {
     /*Check input args*/
-    count = verify_input(count, args);
+    count = verify_input(args);
     if (count == 0) quit("No valid input files");
     
     quit("Source code not complete");
@@ -30,17 +30,31 @@ void quit(char* message)
     exit(EXIT_FAILURE);
 }
 
-int verify_input(int count, char** args)
+/*
+    Validates a list of input arguments
+    Modifies the input string array to contain only valid files on return
+    Input:
+        An array of pointers to strings to test
+    Return:
+        Number of valid cap files in input
+    Output:
+        Input arg is modified by ref to contain only valid cap files
+*/
+int verify_input(char** args)
 {
     /* Skip program name */
-    count--; args++;
-
-    int numFiles = count;
+    args++;
+    
+    int numFiles = 0;
     int i = 0;
     char** argPtr = args;
     char* ext = NULL;
     
     bool shift = false;
+
+    /* Count strings and reset argPtr to start*/
+    for ( ; *argPtr; ++numFiles, ++argPtr);
+    argPtr = args;
     
     /* While there's more input strings */ 
     while (*argPtr && strlen(*argPtr))
