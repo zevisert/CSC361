@@ -37,3 +37,19 @@ Pseudo code
             - pcap loop / next
             - pcap close
         - print the report
+
+SRC IP = 192.168.1.164
+DST IP = 142.104.105.208
+
+SRC PT = 1208
+DST PT = 80
+
+STATUS = S2F1
+
+start_time = 27.280
+end_time = 27.306
+
+Duration = 0.026
+
+Readme needs to say how duration is calc.
+

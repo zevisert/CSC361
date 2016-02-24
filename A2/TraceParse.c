@@ -2,11 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pcap.h>
+#include <netinet/ip.h>
 
 #include "TraceParse.h"
 
 
 #define VERBOSE 1
+
+#define FILTER "tcp"
 
 /* I want booleans! */
 typedef enum { true, false } bool;
@@ -28,8 +31,9 @@ int main(int count, char** args)
             continue;
         }
         else if (VERBOSE) printf("Opened cap file %s\n", args[i]);
-        dump_tcp(cap);
-        pcap_close(cap);
+        /* parse_cap closes for us */
+        parse_cap(cap);
+        
     }
 
     quit("Source code not complete");
@@ -135,8 +139,77 @@ int verify_input(char** args)
     return numFiles;
 }
 
-void dump_tcp(pcap_t* cap)
+/* 
+    Dump the required information from the pcap file pointed to by cap
+    Input: A previously validated and opened .cap file
+    Return: Void
+    Output to console:
+        State of the connection - One of:
+            S0F0, S1F0, S2F0, S1F1, S2F1, S2F2, S0F1, S0F2, or R
+        For completed connections:
+            - Starting time, ending time, and duration for each connection.
+            - Number of packets sent in EACH direction, and the Total
+            - Number of data bytes sent in each direction, and the Totals
+
+        Also need to provide the following on TCP conxns per cap file. 
+            - Number of reset connections
+            - Number of unclosed hanging connections
+            - Number of completed connections
+                - Regarding these:
+                    - The minimum, mean, and maximum connection duration
+                    - The minimim, mean, and maximim RTT times
+                    - The minimum, mean, and maximum number of packets sent
+                    - The minimum, mean, and maximum receive window sizes
+*/
+void parse_cap(pcap_t* cap)
 {
+    struct bpf_program fp;
+    if (pcap_compile(cap, &fp, FILTER, 0, 0) == -1) {
+        fprintf(stderr, "Couldn't parse filter '%s': %s\n", FILTER, pcap_geterr(cap));
+        quit(NULL);
+    }
+    if (pcap_setfilter(cap, &fp) == -1) {
+        fprintf(stderr, "Couldn't install filter '%s': %s\n", FILTER, pcap_geterr(cap));
+        quit(NULL);
+    }
+    /* Wooo! Function pointers! */
+    pcap_loop(cap, -1, inspect_packet, 0);
     
+    /* And close the session */
+    pcap_close(cap);
+}
+
+void inspect_packet(unsigned char* args, const struct pcap_pkthdr* header, const unsigned char* packet)
+{
+    unsigned int size_eth = 14;
+    unsigned int size_ip;
+    unsigned int size_tcp;
+ 
+    const struct eth_header* ethernet = (struct eth_header*)(packet);
+    const struct ip_header*  ip = (struct ip_header*)(packet + size_eth);
+
+    size_ip = IP_HL(ip)*4;
+    if (size_ip < 20) {
+        fprintf(stderr, "Invalid IP header length: %u bytes\n", size_ip);
+        quit(NULL);
+    }
+
+    const struct tcp_header* tcp = (struct tcp_header*)(packet + size_eth + size_ip);
+
+    size_tcp = TH_OFF(tcp)*4;
+    if (size_tcp < 20) {
+        fprintf(stderr, "Invalid TCP header length: %u bytes\n", size_tcp);
+        quit(NULL);
+    }
+
+    
+
+    const unsigned char* payload = (unsigned char *)(packet + size_eth + size_ip + size_tcp);
+    if ((tcp->flags & SYN) || (tcp->flags & RST) || (tcp->flags & FIN))
+    {
+        char* flag_string = flag_to_string(tcp->flags);
+        printf("Packet with flags [%s]\n", flag_string);
+        free(flag_string);
+    }
 
 }
