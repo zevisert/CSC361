@@ -45,3 +45,5 @@
 
 # Swap files
 *.swp
+A2/gcc_Release.h
+A2/gcc_Debug.h
