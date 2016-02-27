@@ -3,16 +3,22 @@
 #include <string.h>
 #include <pcap.h>
 #include <netinet/ip.h>
+#include <arpa/inet.h>
+//#include <stdbool.h>
 
+#include "Headers.h"
 #include "TraceParse.h"
-
 
 #define VERBOSE 1
 
 #define FILTER "tcp"
+#define MAX_CONNECTIONS 1000
 
-/* I want booleans! */
-typedef enum { true, false } bool;
+#define true 1
+#define false 0
+
+struct report reports[MAX_CONNECTIONS];
+int tracked = 0;
 
 int main(int count, char** args)
 {
@@ -22,9 +28,12 @@ int main(int count, char** args)
     
     pcap_t* cap;
     char errbuf[PCAP_ERRBUF_SIZE];
-    int i;
-    for (i = 1; i <= count; ++i)
+	int i = 1;
+    for ( ; i <= count; ++i)
     {
+	    if (i > 1) ZeroMemory(reports);
+	    tracked = 0;
+	    
         if ((cap = pcap_open_offline(args[i], errbuf)) == NULL)
         {
             printf("Couldn't open file %s\nReason: %s\n", args[i], errbuf);
@@ -33,6 +42,8 @@ int main(int count, char** args)
         else if (VERBOSE) printf("Opened cap file %s\n", args[i]);
         /* parse_cap closes for us */
         parse_cap(cap);
+	    
+	    //print_report();
         
     }
 
@@ -72,7 +83,7 @@ int verify_input(char** args)
     char** argPtr = args;
     char* ext = NULL;
     
-    bool shift = false;
+	int shift = false;
 
     /* Count strings and reset argPtr to start*/
     for ( ; *argPtr; ++numFiles, ++argPtr);
@@ -92,7 +103,7 @@ int verify_input(char** args)
                 if (file == NULL)
                 {
                     printf("ERR: File %s doesn't exist, or doesn't have read permissions\n", *argPtr);
-                    shift = true;
+                    shift = 1;
                 }
                 /* Just checking if the file exists, we're done now */
                 else fclose(file);
@@ -112,7 +123,7 @@ int verify_input(char** args)
         }
         
         /* The input we tested wasn't a .cap file */ 
-        if (shift == true)
+        if (shift)
         {
             shift = false;
             char** currString = argPtr;
@@ -177,16 +188,17 @@ void parse_cap(pcap_t* cap)
     
     /* And close the session */
     pcap_close(cap);
+    return;
 }
 
-void inspect_packet(unsigned char* args, const struct pcap_pkthdr* header, const unsigned char* packet)
+void inspect_packet(unsigned char* args, const struct pcap_pkthdr* header, const unsigned char* data)
 {
     unsigned int size_eth = 14;
     unsigned int size_ip;
     unsigned int size_tcp;
  
-    const struct eth_header* ethernet = (struct eth_header*)(packet);
-    const struct ip_header*  ip = (struct ip_header*)(packet + size_eth);
+    //const struct eth_header* ethernet = (struct eth_header*)(data);
+    const struct ip_header* ip = (struct ip_header*)(data + size_eth);
 
     size_ip = IP_HL(ip)*4;
     if (size_ip < 20) {
@@ -194,22 +206,103 @@ void inspect_packet(unsigned char* args, const struct pcap_pkthdr* header, const
         quit(NULL);
     }
 
-    const struct tcp_header* tcp = (struct tcp_header*)(packet + size_eth + size_ip);
+    const struct tcp_header* tcp = (struct tcp_header*)(data + size_eth + size_ip);
 
-    size_tcp = TH_OFF(tcp)*4;
+    size_tcp = TCP_OFF(tcp)*4;
     if (size_tcp < 20) {
         fprintf(stderr, "Invalid TCP header length: %u bytes\n", size_tcp);
         quit(NULL);
     }
 
-    
+    //const unsigned char* payload = (unsigned char *)(packet + size_eth + size_ip + size_tcp);
 
-    const unsigned char* payload = (unsigned char *)(packet + size_eth + size_ip + size_tcp);
-    if ((tcp->flags & SYN) || (tcp->flags & RST) || (tcp->flags & FIN))
-    {
-        char* flag_string = flag_to_string(tcp->flags);
+    const struct packet transmission = packet(ip, tcp, header);
+
+	
+	if (VERBOSE && (transmission.header.flags & (SYN|RST|FIN)))
+	{
+        char* flag_string = FLAG_STRING(transmission.header.flags);
         printf("Packet with flags [%s]\n", flag_string);
         free(flag_string);
-    }
+	}
+    
+    update_reports(&transmission);
 
+    return;
 }
+
+void update_reports(const struct packet* transmission)
+{
+    int i = 0;
+	struct report* iter;
+	struct conxn ID = transmission->route;
+	int haveReport = false;
+	if (VERBOSE && (transmission->header.flags & (SYN|RST|FIN)))
+	{
+		printf("Transmission:\n\tsrc %s:%d\n", inet_ntoa(ID.src_ip), ID.src_port);
+		printf("\tdst %s:%d\n", inet_ntoa(ID.dst_ip), ID.dst_port);
+	}
+    /* Linear search for report with matching conxn 4 tuple */
+	for ( ; i <= tracked; ++i)
+	{
+		iter = &reports[i];
+		if (cmpconxn(iter->ID, transmission->route) == 0)
+		{
+			haveReport = true;
+			break;
+		}
+	}
+    
+	if (VERBOSE && (transmission->header.flags & (SYN | RST | FIN)))
+	{
+		printf("Tracking this connection: %s ", haveReport ? "true" : "false");
+		if (haveReport) printf("at index %d at: %p\n\n", i, &reports[i]);
+		else printf("\n\n");
+	}
+	
+	if (!haveReport)
+	{
+		tracked += 1;
+		iter->ID = transmission->route;
+	}
+	
+	iter->packets_recv += 1;
+	
+    return;
+}
+
+void print_report()
+{
+	int i = 0;
+	for (; i < tracked; ++i)
+	{
+		printf("Connection %d:\n", i+1);
+		printf("Source Address: %s\n", inet_ntoa(reports[i].ID.src_ip));
+		printf("Destination address: %s\n", inet_ntoa(reports[i].ID.dst_ip));
+		printf("Source Port: %d\n", reports[i].ID.src_port);
+		printf("Destination Port: %d\n", reports[i].ID.dst_port);
+		printf("Status: %s\n", STATUS_STRING[reports[i].status]);
+		
+		// Only if the connection is complete provide the following information
+		if (reports[i].status == S2F2)
+		{
+			printf("Start time:\n");
+			printf("End Time:\n");
+			printf("Duration:\n");
+			printf("Number of packets sent from Source to Destination:\n");
+			printf("Number of packets sent from Destination to Source:\n");
+			printf("Total number of packets:\n");
+			printf("Number of data bytes sent from Source to Destination:\n");
+			printf("Number of data bytes sent from Destination to Source:\n");
+			printf("Total number of data bytes:\n");
+
+		}
+		printf("END\n");
+		printf("+++++++++++++++++++++++++++++++++\n");
+	}
+}
+
+
+
+
+
