@@ -16,7 +16,7 @@
 #define true 1
 #define false 0
 
-#define VERBOSE true
+#define VERBOSE false
 
 struct report reports[MAX_CONNECTIONS];
 struct timeval time_begin;
@@ -49,7 +49,6 @@ int main(int count, char** args)
         
     }
 
-    quit("Source code not complete");
     return EXIT_SUCCESS;
 }
 
@@ -204,11 +203,11 @@ void inspect_packet(unsigned char* args, const struct pcap_pkthdr* header, const
         quit(NULL);
     }
 
-	/* Program doesnt need to inspect payloads */ 
-    /*const unsigned char* payload = (unsigned char *)(packet + size_eth + size_ip + size_tcp); */
+    const unsigned char* payload = (unsigned char *)(packet + size_eth + size_ip + size_tcp);
+	unsigned long payload_length = strlen((const char*) payload);
 
 	/* Inialize the data structure containing the information we're tracking */
-    const struct packet transmission = packet(ip, tcp, header);
+    const struct packet transmission = packet(ip, tcp, header, payload_length);
 
 	/* Verbose print on processing a packet with the TCP flags below */
 	if (VERBOSE && (transmission.header.flags & (SYN|RST|FIN)))
@@ -258,6 +257,10 @@ void update_reports(const struct packet* transmission)
 		else printf("\n\n");
 	}
 	
+	struct timeval relative, non_const;
+	non_const = transmission->info.ts;
+	timersub(&non_const, &time_begin, &relative);
+	
 	/* Not tracking this connection yet, initalize a report */
 	if (!haveReport)
 	{
@@ -268,23 +271,30 @@ void update_reports(const struct packet* transmission)
 		iter->ID = transmission->route;
 		
 		/* Get the relative starting time */
-		struct timeval relative, non_const;
 		non_const = transmission->info.ts;
 		timersub(&non_const, &time_begin, &relative);
 		iter->time_start = relative;
 		
 		/* Initialize the window size dynamic arrays */
-		initArray(&iter->window_recv, 5);
-		initArray(&iter->window_send, 5);
+		
+		if (initArray(&(iter->window_recv), 5) ||
+			initArray(&(iter->window_send), 5) ||
+			initArray(&(iter->RTT_ack), 5) ||
+			initArray(&(iter->RTT_seq), 5))
+		{
+			quit("Malloc Failed!");
+		}
 	}
-	
+
 	/* Forward transmission host->client */
 	if (cmpconxn_forward(iter->ID, transmission->route) == 0)
 	{
 		iter->packets_recv += 1;
 		iter->bytes_recv += transmission->info.caplen;
-		/* Store the window size */
-		insertArray(&iter->window_recv, transmission->header.window_size);
+		
+		/* Store the window size and SEQ number */
+		insertArray(&iter->window_recv, (struct array_t) { .data = transmission->header.window_size, .ts = transmission->info.ts});
+		insertArray(&iter->RTT_ack, (struct array_t) { .data = transmission->header.ack_num, .ts = relative });
 	}
 	
 	/* Backward transmission client->host */
@@ -293,7 +303,8 @@ void update_reports(const struct packet* transmission)
 		iter->packets_sent += 1;
 		iter->bytes_sent += transmission->info.caplen;
 		/* Store the window size */
-		insertArray(&iter->window_recv, transmission->header.window_size);
+		insertArray(&iter->window_send, (struct array_t) { .data = transmission->header.window_size, .ts = transmission->info.ts });
+		insertArray(&iter->RTT_seq, (struct array_t) { .data = transmission->header.seq_num, .ts = relative });
 	}
 	
 	// Packet has SYN flag
@@ -326,10 +337,7 @@ void update_reports(const struct packet* transmission)
 		iter->time_end.tv_sec == transmission->info.ts.tv_sec )
 	   )
 	{
-		struct timeval result, non_const;
-		non_const = transmission->info.ts;
-		timersub(&non_const, &time_begin, &result);
-		iter->time_end = result;
+		iter->time_end = relative;
 	}
 }
 
@@ -355,12 +363,18 @@ void print_report()
 	struct timeval time_min, time_mean, time_max;
 	time_min.tv_sec = time_min.tv_usec = LONG_MAX;
 	time_mean.tv_sec = time_mean.tv_usec = time_max.tv_sec = time_max.tv_usec = 0;
-
+	
+	DynArray RTT[tracked];
+	
 	/* Loop through all the connections we've tracked */
 	int i = 0;
 	for (; i < tracked; ++i)
 	{
+		/* Inialize the RTT array even if it's not used below, this way we can free them all in a loop */
+		initArray(&RTT[i], 1);
+
 		item = reports[i];
+		
 		printf("Connection %d:\n", i+1);
 		printf("Source Address: %s\n", inet_ntoa(item.ID.src_ip));
 		printf("Destination address: %s\n", inet_ntoa(item.ID.dst_ip));
@@ -371,7 +385,7 @@ void print_report()
 		/* If verbosing, append more info to the RESET state */
 		if (item.status == R) {
 			resets += 1;
-			if (VERBOSE) printf(" - %d resets, previously %s ", item.reset_count, STATUS_STRING(item.pre_reset_status));
+			if (VERBOSE) printf(" (was %s)", STATUS_STRING(item.pre_reset_status));
 		}
 		printf("\n");
 		
@@ -398,19 +412,46 @@ void print_report()
 			int j = 0;
 			for (; j < item.window_recv.used; ++j)
 			{
-				window_min = min(window_min, item.window_recv.array[j]);
-				window_max = max(window_max, item.window_recv.array[j]);
+				window_min = min(window_min, item.window_recv.array[j].data);
+				window_max = max(window_max, item.window_recv.array[j].data);
 				window_count += 1;
-				window_mean = item.window_recv.array[j];
+				window_mean += item.window_recv.array[j].data;
 			}
+			
 			for (j = 0; j < item.window_send.used; ++j)
 			{
-				window_min = min(window_min, item.window_send.array[j]);
-				window_max = max(window_max, item.window_send.array[j]);
+				window_min = min(window_min, item.window_send.array[j].data);
+				window_max = max(window_max, item.window_send.array[j].data);
 				window_count += 1;
-				window_mean = item.window_send.array[j];
-			}			
+				window_mean += item.window_send.array[j].data;
+			}
+			
+			int ack_match_index = -1;
+			int ack_match_count = 0;
 
+			for (j = 0; j < item.RTT_seq.used; ++j)
+			{
+				int k = 0;
+				for ( ; k < item.RTT_ack.used; ++k)
+				{
+					/* Look at them all! */
+					if (item.RTT_ack.array[k].data == item.RTT_seq.array[j].data)
+					{
+						ack_match_count += 1;
+						ack_match_index = k;
+					}
+				}
+				/* Can calculate RTT for this pair! */
+				if (ack_match_count == 1)
+				{
+					struct timeval time_RTT;
+					timersub(&item.RTT_seq.array[j].ts, &item.RTT_ack.array[ack_match_index].ts, &time_RTT);
+					insertArray(&RTT[i], (struct array_t) { .data = item.RTT_seq.array[j].data, .ts = time_RTT});
+				}
+				ack_match_count = 0;
+				ack_match_index = -1;
+			}
+			
 			/* Print out the information for this connection */
 			printf("Start time: %ld.%06ld\n", item.time_start.tv_sec, item.time_start.tv_usec);
 			printf("End Time: %ld.%06ld\n", item.time_end.tv_sec, item.time_end.tv_usec);
@@ -423,15 +464,16 @@ void print_report()
 			printf("Number of data bytes sent from Source to Destination: %ld\n", item.bytes_sent);
 			printf("Number of data bytes sent from Destination to Source: %ld\n", item.bytes_sent);
 			printf("Total number of data bytes: %ld\n", item.bytes_recv + item.bytes_sent);
-
-			printf("Window is min: %d, max: %d\n", window_min, window_max);
 		}
 		/* This connection doesn't count as completed */
 		else
 		{
 			unclosed += 1;
 		}
-
+		
+		/* Printed out connection stats, done with these arrays */
+		freeArray(&item.window_recv);
+		freeArray(&item.window_send);
 		printf("END\n");
 		printf("+++++++++++++++++++++++++++++++++\n");
 	}
@@ -441,7 +483,29 @@ void print_report()
 	time_mean.tv_usec /= complete;
 	packets_mean /= complete;
 	window_mean /= window_count;
+
+	struct timeval RTT_min;
+	struct timeval RTT_max;
+	struct timeval RTT_mean;
+	int RTT_count = 0;
 	
+	RTT_mean.tv_sec = RTT_mean.tv_usec = RTT_max.tv_sec = RTT_max.tv_usec = 0;
+	RTT_min.tv_sec = RTT_min.tv_usec = LONG_MAX;
+	
+	for (i = 0; i < tracked; ++i)
+	{
+		int j = 0;
+		for (; j < RTT[i].used; ++j)
+		{
+			RTT_min = min_time(RTT_min, RTT[i].array[j].ts);
+			RTT_max = max_time(RTT_max, RTT[i].array[j].ts);
+			RTT_mean.tv_sec += RTT[i].array[j].ts.tv_sec;
+			RTT_mean.tv_usec += RTT[i].array[j].ts.tv_usec;
+			RTT_count += 1;
+		}
+	}
+	RTT_mean.tv_sec /= (RTT_count ? RTT_count : 1);
+	RTT_mean.tv_usec /= (RTT_count ? RTT_count : 1);
 	/* Print the final report */ 
 	printf("\n");
 	printf("Total number of complete TCP connections: %d\n", complete);
@@ -452,9 +516,9 @@ void print_report()
 	printf("Mean time durations: %ld.%06ld\n", time_mean.tv_sec, time_mean.tv_usec);
 	printf("Maximum time durations: %ld.%06ld\n", time_max.tv_sec, time_max.tv_usec);
 	printf("\n");
-	printf("Minimum RTT values including both send/received:\n");
-	printf("Mean RTT values including both send/received:\n");
-	printf("Maximum RTT values including both send/received:\n");
+	printf("Minimum RTT values including both send/received: %ld.%06ld\n", RTT_min.tv_sec, RTT_min.tv_usec);
+	printf("Mean RTT values including both send/received: %ld.%06ld\n", RTT_mean.tv_sec, RTT_mean.tv_usec);
+	printf("Maximum RTT values including both send/received: %ld.%06ld\n", RTT_max.tv_sec, RTT_max.tv_usec);
 	printf("\n");
 	printf("Minimum number of packets including both send/received: %d\n", packets_min);
 	printf("Mean number of packets including both send/received: %d\n", packets_mean);
@@ -463,9 +527,7 @@ void print_report()
 	printf("Minimum receive window sizes including both send/received: %d\n", window_min);
 	printf("Mean receive window sizes including both send/received:%d \n", window_mean);
 	printf("Maximum receive window sizes including both send/received: %d\n", window_max);
+	
+	for (i = 0; i < tracked; ++i)
+		freeArray(&RTT[i]);
 }
-
-
-
-
-

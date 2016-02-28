@@ -39,11 +39,7 @@ struct packet {
     struct pcap_pkthdr info;
     struct tcp_header  header;
     struct conxn       route;
-};
-
-struct RTT
-{
-	
+	unsigned long      payload_length;
 };
 
 struct report {
@@ -58,6 +54,8 @@ struct report {
 	unsigned char  pre_reset_status;
 	DynArray       window_recv;
 	DynArray       window_send;
+	DynArray       RTT_seq;
+	DynArray	   RTT_ack;
 	
 	enum
 	{
@@ -105,7 +103,7 @@ static inline const char* STATUS_STRING(int status)
 	}
 }
 
-static inline struct packet packet(const struct ip_header* ip, const struct tcp_header* tcp, const struct pcap_pkthdr* header)
+static inline struct packet packet(const struct ip_header* ip, const struct tcp_header* tcp, const struct pcap_pkthdr* header, unsigned long length)
 {
     return (struct packet)
         {
@@ -117,7 +115,8 @@ static inline struct packet packet(const struct ip_header* ip, const struct tcp_
                 .dst_port = ntohs(tcp->dst_port)
             },
         .info = *header,
-        .header = *tcp
+        .header = *tcp,
+		.payload_length = length
     };
 }
 
