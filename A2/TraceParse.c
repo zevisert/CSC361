@@ -17,6 +17,7 @@
 #define false 0
 
 #define VERBOSE false
+#define SHOW_RESET_PROIR_STATE false
 
 struct report reports[MAX_CONNECTIONS];
 struct timeval time_begin;
@@ -33,7 +34,11 @@ int main(int count, char** args)
 	int i = 1;
     for ( ; i <= count; ++i)
     {
-	    if (i > 1) ZeroMemory(reports);
+	    if (i > 1)
+	    {
+		    ZeroMemory(reports);
+		    printf("################### NEXT FILE #####################");
+	    }
 	    tracked = 0;
 	    
         if ((cap = pcap_open_offline(args[i], errbuf)) == NULL)
@@ -46,7 +51,6 @@ int main(int count, char** args)
         parse_cap(cap);
 	    
 	    print_report();
-        
     }
 
     return EXIT_SUCCESS;
@@ -341,6 +345,9 @@ void update_reports(const struct packet* transmission)
 	}
 }
 
+/*
+	Generate the required statistics as we loop through the connections observed and print them
+*/
 void print_report()
 {
 	/* Iterator to reduce array accessing */
@@ -366,6 +373,10 @@ void print_report()
 	
 	DynArray RTT[tracked];
 	
+	printf("A) Total number of connections: %d\n\n", tracked);
+	
+	printf("B) Connection Details:\n");
+	
 	/* Loop through all the connections we've tracked */
 	int i = 0;
 	for (; i < tracked; ++i)
@@ -385,7 +396,7 @@ void print_report()
 		/* If verbosing, append more info to the RESET state */
 		if (item.status == R) {
 			resets += 1;
-			if (VERBOSE) printf(" (was %s)", STATUS_STRING(item.pre_reset_status));
+			if (SHOW_RESET_PROIR_STATE) printf(" (was %s)", STATUS_STRING(item.pre_reset_status));
 		}
 		printf("\n");
 		
@@ -405,10 +416,12 @@ void print_report()
 			time_mean.tv_sec += diff.tv_sec;
 			time_mean.tv_usec += diff.tv_usec;
 			
+			/* Update counts for packets transmitted */
 			packets_min = min(packets_min, item.packets_recv + item.packets_sent);
 			packets_max = max(packets_max, item.packets_recv + item.packets_sent);
 			packets_mean += item.packets_recv + item.packets_sent;
 			
+			/* Update counts for window, using received window size */
 			int j = 0;
 			for (; j < item.window_recv.used; ++j)
 			{
@@ -418,6 +431,7 @@ void print_report()
 				window_mean += item.window_recv.array[j].data;
 			}
 			
+			/* Update counts for window, using sent window size */
 			for (j = 0; j < item.window_send.used; ++j)
 			{
 				window_min = min(window_min, item.window_send.array[j].data);
@@ -426,6 +440,7 @@ void print_report()
 				window_mean += item.window_send.array[j].data;
 			}
 			
+			/* Update counts for RTT */
 			int ack_match_index = -1;
 			int ack_match_count = 0;
 
@@ -478,11 +493,11 @@ void print_report()
 		printf("+++++++++++++++++++++++++++++++++\n");
 	}
 	
-	/* Done looping over the tracked connections*/ 
-	time_mean.tv_sec /= complete;
-	time_mean.tv_usec /= complete;
-	packets_mean /= complete;
-	window_mean /= window_count;
+	/* Done looping over the tracked connections */ 
+	time_mean.tv_sec /= (complete ? complete : 1);
+	time_mean.tv_usec /= (complete ? complete : 1);
+	packets_mean /= (complete ? complete : 1);
+	window_mean /= (window_count ? window_count : 0);
 
 	struct timeval RTT_min;
 	struct timeval RTT_max;
@@ -492,6 +507,7 @@ void print_report()
 	RTT_mean.tv_sec = RTT_mean.tv_usec = RTT_max.tv_sec = RTT_max.tv_usec = 0;
 	RTT_min.tv_sec = RTT_min.tv_usec = LONG_MAX;
 	
+	/* Update counts for RTT */
 	for (i = 0; i < tracked; ++i)
 	{
 		int j = 0;
@@ -504,14 +520,20 @@ void print_report()
 			RTT_count += 1;
 		}
 	}
+	/* Divide by zero work around */ 
 	RTT_mean.tv_sec /= (RTT_count ? RTT_count : 1);
 	RTT_mean.tv_usec /= (RTT_count ? RTT_count : 1);
+	
+	/* Free each of the Dynamic Arrays used for storing RTT */ 
+	for (i = 0; i < tracked; ++i)
+		freeArray(&RTT[i]);
+	
 	/* Print the final report */ 
-	printf("\n");
+	printf("\nC) General:\n");
 	printf("Total number of complete TCP connections: %d\n", complete);
 	printf("Number of reset TCP connections: %d\n", resets);
 	printf("Number of TCP connections that were still open when the trace capture ended: %d\n", unclosed);
-	printf("\n");
+	printf("\nD) Complete TCP connections:\n");
 	printf("Minimum time durations: %ld.%06ld\n", time_min.tv_sec, time_min.tv_usec);
 	printf("Mean time durations: %ld.%06ld\n", time_mean.tv_sec, time_mean.tv_usec);
 	printf("Maximum time durations: %ld.%06ld\n", time_max.tv_sec, time_max.tv_usec);
@@ -527,7 +549,4 @@ void print_report()
 	printf("Minimum receive window sizes including both send/received: %d\n", window_min);
 	printf("Mean receive window sizes including both send/received:%d \n", window_mean);
 	printf("Maximum receive window sizes including both send/received: %d\n", window_max);
-	
-	for (i = 0; i < tracked; ++i)
-		freeArray(&RTT[i]);
 }
