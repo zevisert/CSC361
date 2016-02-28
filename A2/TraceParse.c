@@ -198,7 +198,7 @@ void inspect_packet(unsigned char* args, const struct pcap_pkthdr* header, const
     }
 
 	/* Use that to get the TCP header */ 
-    const struct tcp_header* tcp = (struct tcp_header*)(data + size_eth + size_ip);
+    struct tcp_header* tcp = (struct tcp_header*)(data + size_eth + size_ip);
 
 	/* Get and check the size of the TCP header */
     size_tcp = TCP_OFF(tcp)*4;
@@ -207,14 +207,18 @@ void inspect_packet(unsigned char* args, const struct pcap_pkthdr* header, const
         quit(NULL);
     }
 
-    const unsigned char* payload = (unsigned char *)(packet + size_eth + size_ip + size_tcp);
-	unsigned long payload_length = strlen((const char*) payload);
+    //const unsigned char* payload = (unsigned char *)(packet + size_eth + size_ip + size_tcp);
+	unsigned long payload_length = header->caplen - size_eth - size_ip - size_tcp;
+	
+	/* Modify the tcp header seq and ack fields to our byte order */
+	tcp->ack_num = ntohl(tcp->ack_num);
+	tcp->seq_num = ntohl(tcp->seq_num);
 
 	/* Inialize the data structure containing the information we're tracking */
     const struct packet transmission = packet(ip, tcp, header, payload_length);
 
 	/* Verbose print on processing a packet with the TCP flags below */
-	if (VERBOSE && (transmission.header.flags & (SYN|RST|FIN)))
+	if (VERBOSE && (transmission.header.flags & (TCP_FLAGS)))
 	{
         char* flag_string = FLAG_STRING(transmission.header.flags);
         printf("Packet with flags [%s]\n", flag_string);
@@ -236,10 +240,13 @@ void update_reports(const struct packet* transmission)
 	int haveReport = false;
 	
 	/* Verbose print on processing a packet with the TCP flags below */
-	if (VERBOSE && (transmission->header.flags & (SYN | RST | FIN)))
+	if (VERBOSE && (transmission->header.flags & (TCP_FLAGS)))
 	{
 		printf("Transmission:\n\tsrc %s:%d\n", inet_ntoa(ID.src_ip), ID.src_port);
 		printf("\tdst %s:%d\n", inet_ntoa(ID.dst_ip), ID.dst_port);
+		printf("SEQ: %u\n", transmission->header.seq_num);
+		printf("ACK: %u\n", transmission->header.ack_num);
+		printf("PAY: %lu\n", transmission->payload_length);
 	}
 	
     /* Linear search for report with matching conxn 4 tuple */
@@ -298,7 +305,9 @@ void update_reports(const struct packet* transmission)
 		
 		/* Store the window size and SEQ number */
 		insertArray(&iter->window_recv, (struct array_t) { .data = transmission->header.window_size, .ts = transmission->info.ts});
-		insertArray(&iter->RTT_ack, (struct array_t) { .data = transmission->header.ack_num, .ts = relative });
+		insertArray(&iter->RTT_seq, (struct array_t) { .data = (transmission->header.seq_num
+			+ transmission->payload_length + 1 ),
+			.ts = relative });
 	}
 	
 	/* Backward transmission client->host */
@@ -308,7 +317,7 @@ void update_reports(const struct packet* transmission)
 		iter->bytes_sent += transmission->info.caplen;
 		/* Store the window size */
 		insertArray(&iter->window_send, (struct array_t) { .data = transmission->header.window_size, .ts = transmission->info.ts });
-		insertArray(&iter->RTT_seq, (struct array_t) { .data = transmission->header.seq_num, .ts = relative });
+		insertArray(&iter->RTT_ack, (struct array_t) { .data = transmission->header.ack_num, .ts = relative });
 	}
 	
 	// Packet has SYN flag
@@ -443,7 +452,7 @@ void print_report()
 			/* Update counts for RTT */
 			int ack_match_index = -1;
 			int ack_match_count = 0;
-
+			
 			for (j = 0; j < item.RTT_seq.used; ++j)
 			{
 				int k = 0;
@@ -454,14 +463,19 @@ void print_report()
 					{
 						ack_match_count += 1;
 						ack_match_index = k;
+						
 					}
 				}
 				/* Can calculate RTT for this pair! */
 				if (ack_match_count == 1)
 				{
 					struct timeval time_RTT;
-					timersub(&item.RTT_seq.array[j].ts, &item.RTT_ack.array[ack_match_index].ts, &time_RTT);
-					insertArray(&RTT[i], (struct array_t) { .data = item.RTT_seq.array[j].data, .ts = time_RTT});
+					timersub(&item.RTT_ack.array[j].ts, &item.RTT_seq.array[ack_match_index].ts, &time_RTT);
+					if (time_RTT.tv_sec >= 0)
+					{						
+						insertArray(&RTT[i], (struct array_t) { .data = item.RTT_seq.array[j].data, .ts = time_RTT});
+						if (VERBOSE) printf("calculted RTT of %ld.%06ld on %u\n", time_RTT.tv_sec, time_RTT.tv_usec, item.RTT_seq.array[j].data);
+					}
 				}
 				ack_match_count = 0;
 				ack_match_index = -1;
